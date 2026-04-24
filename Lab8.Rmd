@@ -329,3 +329,87 @@ res_poly <- tune_grid(
   control = ctrl
 )
 ```
+
+# 5. Use los modelos para predecir el valor de la variable respuesta
+```{r}
+mejores_cv <- bind_rows(
+  show_best(res_lineal, metric = "accuracy", n = 1) %>%
+    mutate(kernel = "Lineal"),
+  
+  show_best(res_radial, metric = "accuracy", n = 1) %>%
+    mutate(kernel = "Radial/Circular"),
+  
+  show_best(res_poly, metric = "accuracy", n = 1) %>%
+    mutate(kernel = "Polinomial")
+) %>%
+  rename(
+    C = cost,
+    gamma = rbf_sigma,
+    d = degree
+  ) %>%
+  arrange(desc(mean))
+
+mejores_cv
+```
+
+
+```{r}
+best_lineal <- select_best(res_lineal, metric = "accuracy")
+best_radial <- select_best(res_radial, metric = "accuracy")
+best_poly   <- select_best(res_poly, metric = "accuracy")
+```
+
+```{r}
+evaluar_svm <- function(wf, best_params, nombre_kernel) {
+  
+  wf_final <- finalize_workflow(wf, best_params)
+  
+  fit_final <- fit(
+    wf_final,
+    data = train_model
+  )
+  
+  pred <- predict(fit_final, new_data = test_model) %>%
+    bind_cols(test_model %>% select(categoria_precio))
+  
+  metricas <- metricas_svm(
+    pred,
+    truth = categoria_precio,
+    estimate = .pred_class
+  ) %>%
+    mutate(kernel = nombre_kernel, .before = 1)
+  
+  matriz <- conf_mat(
+    pred,
+    truth = categoria_precio,
+    estimate = .pred_class
+  )
+  
+  list(
+    modelo = fit_final,
+    predicciones = pred,
+    metricas = metricas,
+    matriz_confusion = matriz
+  )
+}
+
+final_lineal <- evaluar_svm(wf_lineal, best_lineal, "Lineal")
+final_radial <- evaluar_svm(wf_radial, best_radial, "Radial/Circular")
+final_poly   <- evaluar_svm(wf_poly, best_poly, "Polinomial")
+
+resultados_test <- bind_rows(
+  final_lineal$metricas,
+  final_radial$metricas,
+  final_poly$metricas
+) %>%
+  arrange(desc(.estimate))
+
+resultados_test
+```
+
+# 6. Haga las matrices de confusión respectivas.
+```{r}
+final_lineal$matriz_confusion
+final_radial$matriz_confusion
+final_poly$matriz_confusion
+```
