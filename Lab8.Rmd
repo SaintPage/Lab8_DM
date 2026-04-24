@@ -1,0 +1,200 @@
+---
+title: "Lab8"
+output: html_document
+date: "2026-04-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Link de GitHub:
+https://github.com/SaintPage/Lab8_DM.git
+
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(lubridate)
+library(stringr)
+library(broom)
+```
+
+```{r}
+tmp_env <- new.env()
+load("listings.RData", envir = tmp_env)
+
+objetos <- mget(ls(tmp_env), envir = tmp_env)
+
+listings <- objetos %>%
+  keep(~ is.data.frame(.x)) %>%
+  .[[1]]
+
+listings <- listings %>%
+  slice_head(n = 1000)
+
+dim(listings)
+glimpse(listings)
+```
+
+```{r}
+parse_money_clean <- function(x) {
+  if (is.numeric(x)) return(x)
+  x %>%
+    as.character() %>%
+    str_replace_all("\\$", "") %>%
+    str_replace_all(",", "") %>%
+    str_trim() %>%
+    na_if("") %>%
+    as.numeric()
+}
+
+parse_percent_clean <- function(x) {
+  if (is.numeric(x)) return(x)
+  x %>%
+    as.character() %>%
+    str_replace_all("%", "") %>%
+    str_trim() %>%
+    na_if("") %>%
+    as.numeric()
+}
+
+listings <- listings %>%
+  clean_names()
+
+if ("price" %in% names(listings)) {
+  listings <- listings %>%
+    mutate(price = parse_money_clean(price))
+}
+
+
+if ("host_response_rate" %in% names(listings)) {
+  listings <- listings %>%
+    mutate(host_response_rate = parse_percent_clean(host_response_rate))
+}
+
+if ("host_acceptance_rate" %in% names(listings)) {
+  listings <- listings %>%
+    mutate(host_acceptance_rate = parse_percent_clean(host_acceptance_rate))
+}
+
+cols_fecha <- c("host_since", "first_review", "last_review", "last_scraped")
+cols_fecha <- cols_fecha[cols_fecha %in% names(listings)]
+
+if (length(cols_fecha) > 0) {
+  listings <- listings %>%
+    mutate(across(all_of(cols_fecha), ~ suppressWarnings(ymd(.x))))
+}
+
+listings <- listings %>%
+  select(where(~ !is.list(.x))) %>%
+  mutate(across(where(is.character), as.factor))
+
+summary(listings$price)
+```
+
+
+# 3. Use como variable respuesta la variable categórica que especifica si la casa es barata, media o cara
+
+```{r}
+listings <- listings %>%
+clean_names()
+
+if ("price" %in% names(listings)) {
+listings <- listings %>%
+mutate(price = parse_money_clean(price)) %>%
+mutate(
+categoria_precio = case_when(
+is.na(price)               ~ NA_character_,
+price <= 119               ~ "Barata",
+price > 119 & price <= 323 ~ "Media",
+price > 323                ~ "Cara"
+)
+) %>%
+mutate(
+categoria_precio = factor(
+categoria_precio,
+levels = c("Barata", "Media", "Cara")
+)
+) %>%
+filter(!is.na(categoria_precio))
+}
+
+```
+
+
+# 1. Use los mismos conjuntos de entrenamiento y prueba de las hojas de trabajo pasadas para probar el algoritmo.
+
+```{r}
+set.seed(123)
+
+split_master <- initial_split(
+  listings,
+  prop = 0.80,
+  strata = categoria_precio
+)
+
+train_data <- training(split_master)
+test_data  <- testing(split_master)
+
+dim(train_data)
+dim(test_data)
+```
+
+```{r}
+factor_cols <- names(train_data)[sapply(train_data, is.factor)]
+
+for (col in factor_cols) {
+  if (col %in% names(test_data)) {
+    test_data[[col]] <- factor(test_data[[col]], levels = levels(train_data[[col]]))
+  }
+}
+```
+
+
+```{r}
+vars_quitar <- intersect(
+  names(train_data),
+  c(
+    "id", "listing_url", "scrape_id", "source", "name", "description",
+    "neighborhood_overview", "picture_url", "host_id", "host_url",
+    "host_name", "host_location", "host_about",
+    "host_thumbnail_url", "host_picture_url",
+    "license", "amenities"
+  )
+)
+
+train_model <- train_data %>% select(-all_of(vars_quitar))
+test_model  <- test_data  %>% select(-all_of(vars_quitar))
+```
+
+
+```{r}
+vars_fuga <- intersect(
+  names(train_model),
+  c(
+    "price",
+    "estimated_revenue_l365d"
+  )
+)
+
+train_model <- train_model %>% select(-all_of(vars_fuga))
+test_model  <- test_model  %>% select(-all_of(vars_fuga))
+```
+
+
+
+# 2. Explore los datos y explique las transformaciones que debe hacerle para generar un modelo de máquinas vectoriales de soporte.
+
+Para entrenar un modelo de máquinas vectoriales de soporte (SVM) con este conjunto de datos, primero es necesario definir la variable objetivo (por ejemplo, predecir price o clasificar room_type) y luego realizar una serie de transformaciones clave: eliminar columnas irrelevantes como identificadores, URLs y textos largos que no aportan al modelo; limpiar variables como price convirtiéndolas de texto a valores numéricos; tratar los valores faltantes eliminando columnas con demasiados nulos e imputando otros con medidas como la media o mediana; convertir variables categóricas (como property_type o host_is_superhost) en variables numéricas mediante codificación (one-hot encoding); transformar fechas en variables útiles (por ejemplo, años como anfitrión); convertir porcentajes a formato numérico; y finalmente escalar todas las variables numéricas (usando métodos como StandardScaler), ya que SVM es muy sensible a la escala, además de considerar el tratamiento de valores extremos para mejorar el rendimiento del modelo.
