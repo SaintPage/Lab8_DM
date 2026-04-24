@@ -413,3 +413,74 @@ final_lineal$matriz_confusion
 final_radial$matriz_confusion
 final_poly$matriz_confusion
 ```
+
+# 7. 
+
+```{r Accuracy en el conjunto de ENTRENAMIENTO para cada modelo final}
+acc_train <- function(modelo_final, data_train) {
+  predict(modelo_final$modelo, new_data = data_train) %>%
+    bind_cols(data_train %>% select(categoria_precio)) %>%
+    accuracy(truth = categoria_precio, estimate = .pred_class) %>%
+    pull(.estimate)
+}
+
+train_lineal <- acc_train(final_lineal, train_model)
+train_radial <- acc_train(final_radial, train_model)
+train_poly   <- acc_train(final_poly,   train_model)
+```
+
+```{r}
+cv_lineal <- show_best(res_lineal, metric = "accuracy", n = 1)$mean
+cv_radial <- show_best(res_radial, metric = "accuracy", n = 1)$mean
+cv_poly   <- show_best(res_poly,   metric = "accuracy", n = 1)$mean
+
+```
+
+```{r}
+test_lineal <- final_lineal$metricas %>% filter(.metric == "accuracy") %>% pull(.estimate)
+test_radial <- final_radial$metricas %>% filter(.metric == "accuracy") %>% pull(.estimate)
+test_poly   <- final_poly$metricas   %>% filter(.metric == "accuracy") %>% pull(.estimate)
+```
+
+```{r Tabla comparativa de ajuste}
+tabla_ajuste <- tibble(
+  Kernel      = c("Lineal", "Radial", "Polinomial"),
+  Acc_Train   = round(c(train_lineal, train_radial, train_poly),   4),
+  Acc_CV      = round(c(cv_lineal,    cv_radial,    cv_poly),      4),
+  Acc_Test    = round(c(test_lineal,  test_radial,  test_poly),    4),
+  Gap_Train_Test = round(c(train_lineal - test_lineal,
+                           train_radial - test_radial,
+                           train_poly   - test_poly), 4)
+) %>%
+  mutate(
+    Diagnostico = case_when(
+      Acc_Train < 0.65                          ~ "Subajuste",
+      Gap_Train_Test > 0.10                     ~ "Sobreajuste",
+      abs(Acc_CV - Acc_Test) > 0.05             ~ "Sobreajuste leve",
+      TRUE                                      ~ "Buen ajuste"
+    )
+  )
+
+print(tabla_ajuste)
+```
+
+```{r}
+tabla_ajuste %>%
+  pivot_longer(cols = c(Acc_Train, Acc_CV, Acc_Test),
+               names_to = "Conjunto", values_to = "Accuracy") %>%
+  mutate(Conjunto = factor(Conjunto,
+                           levels = c("Acc_Train", "Acc_CV", "Acc_Test"),
+                           labels = c("Train", "CV (5-fold)", "Test"))) %>%
+  ggplot(aes(x = Kernel, y = Accuracy, fill = Conjunto)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 0.70, linetype = "dashed", color = "gray40") +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent_format()) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title    = "Comparación de accuracy: Train vs CV vs Test",
+    subtitle = "Brecha Train−Test > 10 pp indica sobreajuste",
+    x = "Kernel", y = "Accuracy", fill = "Conjunto"
+  ) +
+  theme_minimal()
+```
+
