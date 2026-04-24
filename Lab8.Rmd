@@ -198,3 +198,134 @@ test_model  <- test_model  %>% select(-all_of(vars_fuga))
 # 2. Explore los datos y explique las transformaciones que debe hacerle para generar un modelo de máquinas vectoriales de soporte.
 
 Para entrenar un modelo de máquinas vectoriales de soporte (SVM) con este conjunto de datos, primero es necesario definir la variable objetivo (por ejemplo, predecir price o clasificar room_type) y luego realizar una serie de transformaciones clave: eliminar columnas irrelevantes como identificadores, URLs y textos largos que no aportan al modelo; limpiar variables como price convirtiéndolas de texto a valores numéricos; tratar los valores faltantes eliminando columnas con demasiados nulos e imputando otros con medidas como la media o mediana; convertir variables categóricas (como property_type o host_is_superhost) en variables numéricas mediante codificación (one-hot encoding); transformar fechas en variables útiles (por ejemplo, años como anfitrión); convertir porcentajes a formato numérico; y finalmente escalar todas las variables numéricas (usando métodos como StandardScaler), ya que SVM es muy sensible a la escala, además de considerar el tratamiento de valores extremos para mejorar el rendimiento del modelo.
+
+# 4. Genere varios (más de 2) modelos de SVM con diferentes kernels y distintos valores en los parámetros c, gamma (circular) y d (en caso de que utilice el polinomial). Puede tunear el modelo de forma automática siempre que explique los resultados
+
+```{r}
+library(tidymodels)
+library(kernlab)
+
+set.seed(123)
+
+# Validación cruzada sobre el conjunto de entrenamiento
+folds_svm <- vfold_cv(
+  train_model,
+  v = 5,
+  strata = categoria_precio
+)
+
+# Eliminar columnas con demasiados NA antes del recipe
+vars_muy_nulas <- train_model %>%
+  summarise(across(everything(), ~ mean(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "prop_na") %>%
+  filter(prop_na > 0.80, variable != "categoria_precio") %>%
+  pull(variable)
+
+train_model <- train_model %>% select(-all_of(vars_muy_nulas))
+test_model  <- test_model  %>% select(-all_of(vars_muy_nulas))
+
+receta_svm <- recipe(categoria_precio ~ ., data = train_model) %>%
+  step_date(all_date_predictors(), features = c("year", "month"), keep_original_cols = FALSE) %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+metricas_svm <- metric_set(accuracy, kap)
+```
+
+
+```{r}
+# Modelo SVM lineal
+svm_lineal <- svm_linear(
+  mode = "classification",
+  cost = tune()
+) %>%
+  set_engine("kernlab")
+
+# Modelo SVM radial o circular
+# En tidymodels, rbf_sigma equivale al parámetro gamma
+svm_radial <- svm_rbf(
+  mode = "classification",
+  cost = tune(),
+  rbf_sigma = tune()
+) %>%
+  set_engine("kernlab")
+
+# Modelo SVM polinomial
+# degree equivale al parámetro d
+svm_poly <- svm_poly(
+  mode = "classification",
+  cost = tune(),
+  degree = tune(),
+  scale_factor = tune()
+) %>%
+  set_engine("kernlab")
+```
+
+
+```{r}
+wf_lineal <- workflow() %>%
+  add_recipe(receta_svm) %>%
+  add_model(svm_lineal)
+
+wf_radial <- workflow() %>%
+  add_recipe(receta_svm) %>%
+  add_model(svm_radial)
+
+wf_poly <- workflow() %>%
+  add_recipe(receta_svm) %>%
+  add_model(svm_poly)
+```
+
+```{r}
+grid_lineal <- tibble(
+  cost = c(0.1, 1, 10, 100)
+)
+
+grid_radial <- crossing(
+  cost = c(0.1, 1, 10, 100),
+  rbf_sigma = c(0.001, 0.01, 0.1, 1)
+)
+
+grid_poly <- crossing(
+  cost = c(0.1, 1),
+  scale_factor = c(0.001, 0.01),
+  degree = c(2, 3)
+)
+```
+
+
+```{r}
+ctrl <- control_grid(save_pred = TRUE)
+
+set.seed(123)
+
+res_lineal <- tune_grid(
+  wf_lineal,
+  resamples = folds_svm,
+  grid = grid_lineal,
+  metrics = metricas_svm,
+  control = ctrl
+)
+
+res_radial <- tune_grid(
+  wf_radial,
+  resamples = folds_svm,
+  grid = grid_radial,
+  metrics = metricas_svm,
+  control = ctrl
+)
+
+res_poly <- tune_grid(
+  wf_poly,
+  resamples = folds_svm,
+  grid = grid_poly,
+  metrics = metricas_svm,
+  control = ctrl
+)
+```
