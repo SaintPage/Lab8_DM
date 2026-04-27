@@ -4,10 +4,6 @@ output: html_document
 date: "2026-04-24"
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
@@ -201,36 +197,53 @@ Para entrenar un modelo de máquinas vectoriales de soporte (SVM) con este conju
 
 # 4. Genere varios (más de 2) modelos de SVM con diferentes kernels y distintos valores en los parámetros c, gamma (circular) y d (en caso de que utilice el polinomial). Puede tunear el modelo de forma automática siempre que explique los resultados
 
-```{r}
+```{r Modelos SVM}
 library(tidymodels)
 library(kernlab)
+library(doParallel)
+
+cl <- makePSOCKcluster(parallel::detectCores() - 1)
+registerDoParallel(cl)
 
 set.seed(123)
 
-# Validación cruzada sobre el conjunto de entrenamiento
-folds_svm <- vfold_cv(
-  train_model,
-  v = 5,
-  strata = categoria_precio
-)
+```
 
-# Eliminar columnas con demasiados NA antes del recipe
+
+```{r}
 vars_muy_nulas <- train_model %>%
   summarise(across(everything(), ~ mean(is.na(.)))) %>%
   pivot_longer(everything(), names_to = "variable", values_to = "prop_na") %>%
-  filter(prop_na > 0.80, variable != "categoria_precio") %>%
+  filter(prop_na > 0.50, variable != "categoria_precio") %>%
+  pull(variable)
+```
+
+```{r Quitar columnas de muy alta cardinalidad }
+vars_alta_card <- train_model %>%
+  select(where(is.factor)) %>%
+  summarise(across(everything(), ~ n_distinct(.))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_lvls") %>%
+  filter(n_lvls > 50) %>%
   pull(variable)
 
-train_model <- train_model %>% select(-all_of(vars_muy_nulas))
-test_model  <- test_model  %>% select(-all_of(vars_muy_nulas))
+train_model <- train_model %>% select(-all_of(c(vars_muy_nulas, vars_alta_card)))
+test_model  <- test_model  %>% select(-all_of(c(vars_muy_nulas, vars_alta_card)))
 
+```
+
+```{r}
+folds_svm <- vfold_cv(train_model, v = 3, strata = categoria_precio)
+
+```
+
+```{r}
 receta_svm <- recipe(categoria_precio ~ ., data = train_model) %>%
-  step_date(all_date_predictors(), features = c("year", "month"), keep_original_cols = FALSE) %>%
+  step_date(all_date_predictors(), features = c("year", "month"),
+            keep_original_cols = FALSE) %>%
   step_zv(all_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_impute_mode(all_nominal_predictors()) %>%
-  step_unknown(all_nominal_predictors()) %>%
-  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_other(all_nominal_predictors(), threshold = 0.05) %>%
   step_dummy(all_nominal_predictors()) %>%
   step_nzv(all_predictors()) %>%
   step_normalize(all_numeric_predictors())
@@ -238,185 +251,108 @@ receta_svm <- recipe(categoria_precio ~ ., data = train_model) %>%
 metricas_svm <- metric_set(accuracy, kap)
 ```
 
-
 ```{r}
-# Modelo SVM lineal
-svm_lineal <- svm_linear(
-  mode = "classification",
-  cost = tune()
-) %>%
+svm_lineal <- svm_linear(mode = "classification", cost = tune()) %>%
   set_engine("kernlab")
 
-# Modelo SVM radial o circular
-# En tidymodels, rbf_sigma equivale al parámetro gamma
-svm_radial <- svm_rbf(
-  mode = "classification",
-  cost = tune(),
-  rbf_sigma = tune()
-) %>%
+svm_radial <- svm_rbf(mode = "classification",
+                      cost = tune(), rbf_sigma = tune()) %>%
   set_engine("kernlab")
 
-# Modelo SVM polinomial
-# degree equivale al parámetro d
-svm_poly <- svm_poly(
-  mode = "classification",
-  cost = tune(),
-  degree = tune(),
-  scale_factor = tune()
-) %>%
+svm_poly <- svm_poly(mode = "classification",
+                     cost = tune(), degree = tune()) %>%
   set_engine("kernlab")
+
+wf_lineal <- workflow() %>% add_recipe(receta_svm) %>% add_model(svm_lineal)
+wf_radial <- workflow() %>% add_recipe(receta_svm) %>% add_model(svm_radial)
+wf_poly   <- workflow() %>% add_recipe(receta_svm) %>% add_model(svm_poly)
 ```
 
 
 ```{r}
-wf_lineal <- workflow() %>%
-  add_recipe(receta_svm) %>%
-  add_model(svm_lineal)
-
-wf_radial <- workflow() %>%
-  add_recipe(receta_svm) %>%
-  add_model(svm_radial)
-
-wf_poly <- workflow() %>%
-  add_recipe(receta_svm) %>%
-  add_model(svm_poly)
-```
-
-```{r}
-grid_lineal <- tibble(
-  cost = c(0.1, 1, 10, 100)
-)
+# Grids reducidos pero cubriendo el espacio relevante
+grid_lineal <- tibble(cost = c(0.1, 1, 10))
 
 grid_radial <- crossing(
-  cost = c(0.1, 1, 10, 100),
-  rbf_sigma = c(0.001, 0.01, 0.1, 1)
+  cost      = c(0.1, 1, 10),
+  rbf_sigma = c(0.01, 0.1)
 )
 
 grid_poly <- crossing(
-  cost = c(0.1, 1),
-  scale_factor = c(0.001, 0.01),
+  cost   = c(0.1, 1),
   degree = c(2, 3)
 )
-```
 
+
+```
 
 ```{r}
-ctrl <- control_grid(save_pred = TRUE)
+ctrl <- control_grid(save_pred = FALSE, parallel_over = "everything")
 
 set.seed(123)
+res_lineal <- tune_grid(wf_lineal, resamples = folds_svm,
+                        grid = grid_lineal, metrics = metricas_svm, control = ctrl)
 
-res_lineal <- tune_grid(
-  wf_lineal,
-  resamples = folds_svm,
-  grid = grid_lineal,
-  metrics = metricas_svm,
-  control = ctrl
-)
+res_radial <- tune_grid(wf_radial, resamples = folds_svm,
+                        grid = grid_radial, metrics = metricas_svm, control = ctrl)
 
-res_radial <- tune_grid(
-  wf_radial,
-  resamples = folds_svm,
-  grid = grid_radial,
-  metrics = metricas_svm,
-  control = ctrl
-)
-
-res_poly <- tune_grid(
-  wf_poly,
-  resamples = folds_svm,
-  grid = grid_poly,
-  metrics = metricas_svm,
-  control = ctrl
-)
+res_poly   <- tune_grid(wf_poly,   resamples = folds_svm,
+                        grid = grid_poly,   metrics = metricas_svm, control = ctrl)
 ```
-
 # 5. Use los modelos para predecir el valor de la variable respuesta
 ```{r}
 mejores_cv <- bind_rows(
-  show_best(res_lineal, metric = "accuracy", n = 1) %>%
-    mutate(kernel = "Lineal"),
-  
-  show_best(res_radial, metric = "accuracy", n = 1) %>%
-    mutate(kernel = "Radial/Circular"),
-  
-  show_best(res_poly, metric = "accuracy", n = 1) %>%
-    mutate(kernel = "Polinomial")
-) %>%
-  rename(
-    C = cost,
-    gamma = rbf_sigma,
-    d = degree
-  ) %>%
-  arrange(desc(mean))
+  show_best(res_lineal, metric = "accuracy", n = 1) %>% mutate(kernel = "Lineal"),
+  show_best(res_radial, metric = "accuracy", n = 1) %>% mutate(kernel = "Radial"),
+  show_best(res_poly,   metric = "accuracy", n = 1) %>% mutate(kernel = "Polinomial")
+) %>% arrange(desc(mean))
 
 mejores_cv
-```
 
-
-```{r}
 best_lineal <- select_best(res_lineal, metric = "accuracy")
 best_radial <- select_best(res_radial, metric = "accuracy")
-best_poly   <- select_best(res_poly, metric = "accuracy")
+best_poly   <- select_best(res_poly,   metric = "accuracy")
 ```
 
 ```{r}
 evaluar_svm <- function(wf, best_params, nombre_kernel) {
-  
-  wf_final <- finalize_workflow(wf, best_params)
-  
-  fit_final <- fit(
-    wf_final,
-    data = train_model
-  )
+  wf_final  <- finalize_workflow(wf, best_params)
+  fit_final <- fit(wf_final, data = train_model)
   
   pred <- predict(fit_final, new_data = test_model) %>%
     bind_cols(test_model %>% select(categoria_precio))
   
-  metricas <- metricas_svm(
-    pred,
-    truth = categoria_precio,
-    estimate = .pred_class
-  ) %>%
+  metricas <- metricas_svm(pred, truth = categoria_precio,
+                           estimate = .pred_class) %>%
     mutate(kernel = nombre_kernel, .before = 1)
   
-  matriz <- conf_mat(
-    pred,
-    truth = categoria_precio,
-    estimate = .pred_class
-  )
+  matriz <- conf_mat(pred, truth = categoria_precio, estimate = .pred_class)
   
-  list(
-    modelo = fit_final,
-    predicciones = pred,
-    metricas = metricas,
-    matriz_confusion = matriz
-  )
+  list(modelo = fit_final, predicciones = pred,
+       metricas = metricas, matriz_confusion = matriz)
 }
 
 final_lineal <- evaluar_svm(wf_lineal, best_lineal, "Lineal")
-final_radial <- evaluar_svm(wf_radial, best_radial, "Radial/Circular")
-final_poly   <- evaluar_svm(wf_poly, best_poly, "Polinomial")
+final_radial <- evaluar_svm(wf_radial, best_radial, "Radial")
+final_poly   <- evaluar_svm(wf_poly,   best_poly,   "Polinomial")
 
 resultados_test <- bind_rows(
-  final_lineal$metricas,
-  final_radial$metricas,
-  final_poly$metricas
-) %>%
-  arrange(desc(.estimate))
+  final_lineal$metricas, final_radial$metricas, final_poly$metricas
+) %>% arrange(desc(.estimate))
 
 resultados_test
 ```
 
-# 6. Haga las matrices de confusión respectivas.
+# 6.Haga las matrices de confusión respectivas.
+
 ```{r}
 final_lineal$matriz_confusion
 final_radial$matriz_confusion
 final_poly$matriz_confusion
 ```
 
-# 7. 
-
-```{r Accuracy en el conjunto de ENTRENAMIENTO para cada modelo final}
+# 7.Analice si los modelos están sobre ajustados o desajustados. ¿Qué puede hacer para manejar el sobreajuste o desajuste?. 
+```{r}
 acc_train <- function(modelo_final, data_train) {
   predict(modelo_final$modelo, new_data = data_train) %>%
     bind_cols(data_train %>% select(categoria_precio)) %>%
@@ -427,37 +363,30 @@ acc_train <- function(modelo_final, data_train) {
 train_lineal <- acc_train(final_lineal, train_model)
 train_radial <- acc_train(final_radial, train_model)
 train_poly   <- acc_train(final_poly,   train_model)
-```
 
-```{r}
 cv_lineal <- show_best(res_lineal, metric = "accuracy", n = 1)$mean
 cv_radial <- show_best(res_radial, metric = "accuracy", n = 1)$mean
 cv_poly   <- show_best(res_poly,   metric = "accuracy", n = 1)$mean
 
-```
-
-```{r}
 test_lineal <- final_lineal$metricas %>% filter(.metric == "accuracy") %>% pull(.estimate)
 test_radial <- final_radial$metricas %>% filter(.metric == "accuracy") %>% pull(.estimate)
 test_poly   <- final_poly$metricas   %>% filter(.metric == "accuracy") %>% pull(.estimate)
-```
 
-```{r Tabla comparativa de ajuste}
 tabla_ajuste <- tibble(
-  Kernel      = c("Lineal", "Radial", "Polinomial"),
-  Acc_Train   = round(c(train_lineal, train_radial, train_poly),   4),
-  Acc_CV      = round(c(cv_lineal,    cv_radial,    cv_poly),      4),
-  Acc_Test    = round(c(test_lineal,  test_radial,  test_poly),    4),
+  Kernel         = c("Lineal", "Radial", "Polinomial"),
+  Acc_Train      = round(c(train_lineal, train_radial, train_poly), 4),
+  Acc_CV         = round(c(cv_lineal,    cv_radial,    cv_poly),    4),
+  Acc_Test       = round(c(test_lineal,  test_radial,  test_poly),  4),
   Gap_Train_Test = round(c(train_lineal - test_lineal,
                            train_radial - test_radial,
                            train_poly   - test_poly), 4)
 ) %>%
   mutate(
     Diagnostico = case_when(
-      Acc_Train < 0.65                          ~ "Subajuste",
-      Gap_Train_Test > 0.10                     ~ "Sobreajuste",
-      abs(Acc_CV - Acc_Test) > 0.05             ~ "Sobreajuste leve",
-      TRUE                                      ~ "Buen ajuste"
+      Acc_Train < 0.65              ~ "Subajuste",
+      Gap_Train_Test > 0.10         ~ "Sobreajuste",
+      abs(Acc_CV - Acc_Test) > 0.05 ~ "Sobreajuste leve",
+      TRUE                          ~ "Buen ajuste"
     )
   )
 
@@ -470,17 +399,167 @@ tabla_ajuste %>%
                names_to = "Conjunto", values_to = "Accuracy") %>%
   mutate(Conjunto = factor(Conjunto,
                            levels = c("Acc_Train", "Acc_CV", "Acc_Test"),
-                           labels = c("Train", "CV (5-fold)", "Test"))) %>%
+                           labels = c("Train", "CV (3-fold)", "Test"))) %>%
   ggplot(aes(x = Kernel, y = Accuracy, fill = Conjunto)) +
   geom_col(position = "dodge") +
   geom_hline(yintercept = 0.70, linetype = "dashed", color = "gray40") +
   scale_y_continuous(limits = c(0, 1), labels = scales::percent_format()) +
   scale_fill_brewer(palette = "Set2") +
-  labs(
-    title    = "Comparación de accuracy: Train vs CV vs Test",
-    subtitle = "Brecha Train−Test > 10 pp indica sobreajuste",
-    x = "Kernel", y = "Accuracy", fill = "Conjunto"
-  ) +
+  labs(title = "Comparación de accuracy: Train vs CV vs Test",
+       subtitle = "Brecha Train−Test > 10 pp indica sobreajuste",
+       x = "Kernel", y = "Accuracy", fill = "Conjunto") +
   theme_minimal()
 ```
 
+
+```{r}
+stopCluster(cl)
+registerDoSEQ()
+```
+
+Los tres modelos presentan sobreajuste, aunque con intensidad muy diferente. Los kernels no lineales (radial y polinomial) llegan a accuracy perfecto en entrenamiento (1.0000) pero caen a 0.68 y 0.64 en test, abriendo brechas de 31.7 y 36.1 puntos porcentuales respectivamente. El kernel lineal también sobreajusta, pero de forma mucho más moderada: 82.6 % en train contra 69.3 % en test, con una brecha de 13.3 pp.Lo más revelador es comparar el accuracy de validación cruzada con el de test: en los tres modelos estos dos valores son prácticamente iguales (diferencias menores a 2 pp). Esto significa que la CV está estimando correctamente el desempeño en datos no vistos, y que el sobreajuste no está ocurriendo durante el tuneo de hiperparámetros, sino en el ajuste final sobre los 800 registros de entrenamiento. En otras palabras, los modelos memorizan el train pero no logran extraer un patrón que generalice más allá del 70 %.El mejor modelo desde el punto de vista de generalización es el lineal, no el más complejo. Los kernels radial y polinomial tienen suficiente flexibilidad para construir fronteras que se adaptan al ruido del entrenamiento, lo cual explica por qué obtienen accuracy perfecto pero peor desempeño en test que el modelo más simple. Esto es consistente con el principio de que, cuando la frontera real entre clases es aproximadamente lineal o cuando el conjunto de entrenamiento es pequeño (n=800), aumentar la complejidad del kernel solo añade varianza.
+
+# 8. Compare los resultados obtenidos con los diferentes modelos que hizo en cuanto a efectividad, tiempo de procesamiento y equivocaciones (donde el algoritmo se equivocó más, donde se equivocó menos y la importancia que tienen los errores).
+
+```{r Tiempos de entrenamiento del modelo final }
+medir_tiempo <- function(wf, best_params) {
+  wf_final <- finalize_workflow(wf, best_params)
+  t0 <- Sys.time()
+  fit(wf_final, data = train_model)
+  as.numeric(difftime(Sys.time(), t0, units = "secs"))
+}
+
+t_lineal <- medir_tiempo(wf_lineal, best_lineal)
+t_radial <- medir_tiempo(wf_radial, best_radial)
+t_poly   <- medir_tiempo(wf_poly,   best_poly)
+
+
+```
+
+```{r}
+metricas_globales <- bind_rows(
+  final_lineal$metricas,
+  final_radial$metricas,
+  final_poly$metricas
+) %>%
+  pivot_wider(names_from = .metric, values_from = .estimate) %>%
+  select(kernel, accuracy, kap)
+```
+
+
+```{r}
+metricas_por_clase <- function(fit_obj, nombre) {
+  pred <- fit_obj$predicciones
+  bind_rows(
+    precision(pred, truth = categoria_precio, estimate = .pred_class,
+              estimator = "macro"),
+    recall(pred,    truth = categoria_precio, estimate = .pred_class,
+           estimator = "macro"),
+    f_meas(pred,    truth = categoria_precio, estimate = .pred_class,
+           estimator = "macro")
+  ) %>%
+    select(.metric, .estimate) %>%
+    pivot_wider(names_from = .metric, values_from = .estimate) %>%
+    mutate(kernel = nombre, .before = 1)
+}
+
+por_clase <- bind_rows(
+  metricas_por_clase(final_lineal, "Lineal"),
+  metricas_por_clase(final_radial, "Radial"),
+  metricas_por_clase(final_poly,   "Polinomial")
+)
+```
+
+```{r tabla comparativa}
+tabla_comparativa <- metricas_globales %>%
+  left_join(por_clase, by = "kernel") %>%
+  mutate(tiempo_seg = round(c(t_lineal, t_radial, t_poly), 2)) %>%
+  arrange(desc(accuracy))
+
+tabla_comparativa
+```
+
+```{r ¿Dónde se equivoca cada modelo? Errores por clase}
+errores_por_clase <- function(fit_obj, nombre) {
+  cm <- as.matrix(fit_obj$matriz_confusion$table)
+  total_real <- colSums(cm)        # cuántos hay realmente de cada clase
+  aciertos   <- diag(cm)           # diagonal = aciertos
+  errores    <- total_real - aciertos
+  tibble(
+    kernel = nombre,
+    Clase  = colnames(cm),
+    Total_Real = total_real,
+    Errores    = errores,
+    Tasa_Error = round(errores / total_real, 3)
+  )
+}
+
+errores <- bind_rows(
+  errores_por_clase(final_lineal, "Lineal"),
+  errores_por_clase(final_radial, "Radial"),
+  errores_por_clase(final_poly,   "Polinomial")
+)
+
+errores %>% arrange(kernel, desc(Tasa_Error))
+```
+
+```{r}
+errores %>%
+  ggplot(aes(x = Clase, y = Tasa_Error, fill = kernel)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Tasa de error por clase y kernel",
+       subtitle = "Cuanto más alta la barra, más se equivoca el modelo en esa categoría",
+       x = "Clase real", y = "Tasa de error", fill = "Kernel") +
+  theme_minimal()
+```
+Los tres modelos quedan razonablemente cerca en accuracy (entre 64 % y 69 %), pero el kernel lineal es el mejor en todas las métricas relevantes: 69.3 % de accuracy, kappa de 0.51 y F1-macro de 0.69. El radial queda casi empatado, mientras que el polinomial es claramente el peor (kappa 0.42 indica un acuerdo apenas moderado con la realidad). En tiempo de entrenamiento la diferencia es mínima (0.75 s contra 0.96 s), así que la decisión se define por desempeño, no por costo computacional.
+Donde más se equivocan los tres modelos es en la clase Cara con el polinomial (50 % de error) y en la clase Media con todos los kernels (~40 %). Esto último es el patrón clásico de problemas con tres categorías ordinales: las propiedades de precio intermedio se confunden con las baratas y con las caras al mismo tiempo, porque comparten características con ambos extremos. La clase Barata es la más fácil para los tres modelos (errores entre 20 % y 25 %), lo cual tiene sentido porque las propiedades económicas tienden a tener perfiles más homogéneos.
+Importancia de los errores para SmartStay: confundir Barata con Cara o viceversa es el error más costoso porque rompe la confianza con el cliente; afortunadamente es poco frecuente. Los errores predominantes son entre clases adyacentes (Media↔Barata y Media↔Cara), que son recuperables. El kernel lineal es el modelo a llevar adelante: maximiza accuracy, minimiza errores en la clase Cara (la más relevante para los incentivos económicos de Airbnb) y mantiene la mejor capacidad de generalización.
+
+
+# 9. Compare la eficiencia del mejor modelo de SVM con los resultados obtenidos en los algoritmos de las hojas de trabajo anteriores que usen la misma variable respuesta (árbol de decisión y random forest, naive bayes, KNN, regresión logística). ¿Cuál es mejor para predecir? ¿Cuál se demoró más en procesar?
+
+```{r}
+comparacion <- tribble(
+  ~Modelo,                ~Lab,    ~Accuracy_Test, ~Notas,
+  "Árbol sin CV",         "Lab 4", 0.6182,         "rpart, todas las obs",
+  "Árbol con CV (cp opt)","Lab 4", 0.6339,         "rpart + 10-fold CV, todas las obs",
+  "Random Forest",        "Lab 4", 0.6414,         "500 árboles, mtry=2, todas las obs",
+  "Naive Bayes",          "Lab 5", 0.5374,         "todas las obs",
+  "KNN (k=5)",            "Lab 6", NA,             "rellenar con tu valor",
+  "Reg. Logística*",      "Lab 7", 0.8545,         "*BINARIA cara/no, no comparable directo",
+  "SVM Lineal (mejor)",   "Lab 8", 0.6931,         "n=800 (muestra reducida)",
+  "SVM Radial",           "Lab 8", 0.6832,         "n=800",
+  "SVM Polinomial",       "Lab 8", 0.6386,         "n=800"
+) %>%
+  arrange(desc(Accuracy_Test))
+
+comparacion
+```
+
+```{r}
+comparacion_multiclase <- comparacion %>%
+  filter(!str_detect(Modelo, "Logística")) %>%
+  filter(!is.na(Accuracy_Test))
+
+comparacion_multiclase %>%
+  mutate(Modelo = fct_reorder(Modelo, Accuracy_Test)) %>%
+  ggplot(aes(x = Modelo, y = Accuracy_Test, fill = Lab)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Accuracy_Test, accuracy = 0.1)),
+            hjust = -0.15, size = 3.5) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(),
+                     limits = c(0, 0.85)) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Accuracy en test por modelo de clasificación",
+       subtitle = "Variable respuesta: categoria_precio (3 clases)",
+       x = NULL, y = "Accuracy (test)") +
+  theme_minimal()
+```
+
+El SVM Lineal lidera la comparación con 69.3 % de accuracy, seguido del SVM Radial (68.3 %). Ambos superan al Random Forest (64.1 %), que era el mejor modelo de las entregas anteriores, por aproximadamente 5 puntos porcentuales. Los árboles individuales (con y sin CV) quedan en el rango de 61–63 %, y Naive Bayes cierra la lista con 53.7 %, claramente por debajo del resto.
+En tiempo de procesamiento, Naive Bayes y los árboles son los más rápidos (segundos), Random Forest es moderado (entrena 500 árboles), y los SVM en este caso entrenaron en menos de un segundo, aunque sobre una muestra reducida de 800 filas. Si se escalara el SVM a todo el dataset, sería el más lento de todos por su complejidad O(n²)–O(n³); el Random Forest, en cambio, escala de forma mucho más amigable.
+El mejor modelo para predecir es el SVM Lineal: tiene la mayor accuracy y la mejor capacidad de generalización entre los modelos multiclase comparables. Sin embargo, para implementación en producción dentro de SmartStay, donde hay que clasificar miles de propiedades de forma recurrente, Random Forest sigue siendo una opción muy competitiva porque combina buen desempeño con escalabilidad y no requiere tanto preprocesamiento (escalado, one-hot, imputación). La regresión logística del Lab 7 no entra en esta comparación porque resuelve un problema binario, no las tres clases.
