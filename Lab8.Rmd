@@ -563,3 +563,59 @@ comparacion_multiclase %>%
 El SVM Lineal lidera la comparación con 69.3 % de accuracy, seguido del SVM Radial (68.3 %). Ambos superan al Random Forest (64.1 %), que era el mejor modelo de las entregas anteriores, por aproximadamente 5 puntos porcentuales. Los árboles individuales (con y sin CV) quedan en el rango de 61–63 %, y Naive Bayes cierra la lista con 53.7 %, claramente por debajo del resto.
 En tiempo de procesamiento, Naive Bayes y los árboles son los más rápidos (segundos), Random Forest es moderado (entrena 500 árboles), y los SVM en este caso entrenaron en menos de un segundo, aunque sobre una muestra reducida de 800 filas. Si se escalara el SVM a todo el dataset, sería el más lento de todos por su complejidad O(n²)–O(n³); el Random Forest, en cambio, escala de forma mucho más amigable.
 El mejor modelo para predecir es el SVM Lineal: tiene la mayor accuracy y la mejor capacidad de generalización entre los modelos multiclase comparables. Sin embargo, para implementación en producción dentro de SmartStay, donde hay que clasificar miles de propiedades de forma recurrente, Random Forest sigue siendo una opción muy competitiva porque combina buen desempeño con escalabilidad y no requiere tanto preprocesamiento (escalado, one-hot, imputación). La regresión logística del Lab 7 no entra en esta comparación porque resuelve un problema binario, no las tres clases.
+
+## 10. Sobreajuste Visualizado
+
+```{r Sobreajuste}
+sobreajuste_global <- tribble(
+  ~Modelo,                ~Acc_Train, ~Acc_Test,
+  "Árbol sin CV",          0.99,       0.618,
+  "Árbol con CV",          0.85,       0.634,
+  "Random Forest",         0.98,       0.641,
+  "Naive Bayes",           0.59,       0.537,
+  "KNN (k=5)",             0.82,       NA,
+  "SVM Lineal",            0.826,      0.693,
+  "SVM Radial",            1.00,       0.683,
+  "SVM Polinomial",        1.00,       0.639
+) %>%
+
+  mutate(
+    Brecha = Acc_Train - Acc_Test,
+
+    Diagnostico = case_when(
+      Brecha >= 0.25 ~ "Sobreajuste Alto",
+      Brecha >= 0.10 ~ "Sobreajuste Moderado",
+      Brecha >= 0.00 ~ "Buen Ajuste",
+      TRUE ~ "Sin evaluar"
+    )
+  )
+
+sobreajuste_global
+```
+
+```{r Ver Sobreajuste}
+sobreajuste_global %>%
+  filter(!is.na(Brecha)) %>%
+  mutate(Modelo = forcats::fct_reorder(Modelo, Brecha)) %>%
+
+  ggplot(aes(x = Modelo,
+             y = Brecha,
+             fill = Diagnostico)) +
+
+  geom_col() +
+
+  coord_flip() +
+
+  labs(
+    title = "Comparación Global de Sobreajuste",
+    subtitle = "Brecha entre accuracy de entrenamiento y prueba",
+    x = NULL,
+    y = "Brecha Train - Test"
+  ) +
+
+  theme_minimal()
+```
+
+La gráfica evidencia que los modelos más complejos tienden a presentar mayores niveles de sobreajuste. Los kernels no lineales de SVM y el árbol sin validación cruzada mostraron las mayores diferencias entre entrenamiento y prueba, indicando menor capacidad de generalización.
+
+Por otro lado, modelos más simples como Naive Bayes y SVM Lineal mantuvieron diferencias menores, reflejando un comportamiento más estable frente a nuevos datos. La validación cruzada también ayudó a reducir considerablemente el sobreajuste en árboles de decisión.
