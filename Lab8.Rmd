@@ -619,3 +619,160 @@ sobreajuste_global %>%
 La gráfica evidencia que los modelos más complejos tienden a presentar mayores niveles de sobreajuste. Los kernels no lineales de SVM y el árbol sin validación cruzada mostraron las mayores diferencias entre entrenamiento y prueba, indicando menor capacidad de generalización.
 
 Por otro lado, modelos más simples como Naive Bayes y SVM Lineal mantuvieron diferencias menores, reflejando un comportamiento más estable frente a nuevos datos. La validación cruzada también ayudó a reducir considerablemente el sobreajuste en árboles de decisión.
+
+## 11. Predecir Precio
+
+```{r}
+# Crear dataset para regresión
+
+datos_regresion <- listings %>%
+  filter(!is.na(price)) %>%
+  mutate(price = as.numeric(price))
+```
+
+```{r}
+datos_regresion <- listings %>%
+  mutate(price = parse_money_clean(price)) %>%
+  filter(!is.na(price)) %>%
+  select(where(~ !all(is.na(.)))) %>%
+  select(where(~ mean(is.na(.)) < 0.5)) %>%
+  select(where(~ n_distinct(.) > 1)) %>%
+
+  select(
+    -contains("description"),
+    -contains("overview"),
+    -contains("about"),
+    -contains("url"),
+    -contains("picture"),
+    -contains("amenities")
+  )
+
+set.seed(123)
+
+split_reg <- initial_split(datos_regresion, prop = 0.8)
+
+train_reg <- training(split_reg)
+test_reg  <- testing(split_reg)
+```
+
+```{r Regressor RF}
+modelo_rf_reg <- rand_forest(
+  trees = 300,
+  mtry = tune(),
+  min_n = tune()
+) %>%
+
+  set_engine("ranger") %>%
+
+  set_mode("regression")
+```
+
+```{r Receta}
+receta_reg <- recipe(price ~ ., data = train_reg) %>%
+  step_rm(categoria_precio) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+```{r Workflow y Cross Validation}
+workflow_rf_reg <- workflow() %>%
+  add_recipe(receta_reg) %>%
+  add_model(modelo_rf_reg)
+
+set.seed(123)
+
+folds_reg <- vfold_cv(train_reg, v = 3)
+```
+
+```{r Grid Tune}
+grid_rf_reg <- grid_regular(
+  mtry(range = c(5, 15)),
+  min_n(range = c(2, 10)),
+  levels = 3
+)
+
+set.seed(123)
+
+tune_rf_reg <- tune_grid(
+  workflow_rf_reg,
+  resamples = folds_reg,
+  grid = grid_rf_reg,
+  metrics = metric_set(rmse, mae, rsq)
+)
+```
+
+```{r Mejores Hiper}
+mejores_rf_reg <- select_best(
+  tune_rf_reg,
+  metric = "rmse"
+)
+
+mejores_rf_reg
+```
+
+```{r Entrenar Modelo}
+final_rf_reg <- finalize_workflow(
+  workflow_rf_reg,
+  mejores_rf_reg
+)
+
+modelo_final_reg <- fit(
+  final_rf_reg,
+  data = train_reg
+)
+```
+
+```{r Predicción}
+predicciones_reg <- predict(
+  modelo_final_reg,
+  test_reg
+) %>%
+
+  bind_cols(test_reg %>% select(price))
+```
+
+```{r Métricas}
+metricas_reg <- metric_set(rmse, mae, rsq)
+
+metricas_reg(
+  predicciones_reg,
+  truth = price,
+  estimate = .pred
+)
+```
+
+```{r Comparación}
+ggplot(predicciones_reg,
+       aes(x = price,
+           y = .pred)) +
+
+  geom_point(alpha = 0.5) +
+
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dashed"
+  ) +
+
+  labs(
+    title = "Precio Real vs Precio Predicho",
+    x = "Precio Real",
+    y = "Precio Predicho"
+  )
+```
+
+## Modelo de regresión para predicción de precios
+
+Se construyó un modelo de regresión utilizando Random Forest con el objetivo de predecir directamente el precio de las propiedades Airbnb. A diferencia de la clasificación utilizada anteriormente, en esta sección se trabajó con la variable numérica original del precio.
+
+El modelo fue tuneado utilizando validación cruzada y búsqueda de hiperparámetros sobre los parámetros `mtry` y `min_n`. Posteriormente, se seleccionó la combinación que minimizó el RMSE.
+
+Las métricas utilizadas para evaluar el desempeño fueron RMSE, MAE y R². El RMSE permite medir el error promedio de predicción en las mismas unidades del precio, mientras que MAE representa el error absoluto promedio y R² indica qué proporción de la variabilidad del precio puede ser explicada por el modelo.
+
+La gráfica de valores reales contra predichos permite visualizar qué tan cerca se encuentran las predicciones respecto a los precios reales. Mientras más cercanos estén los puntos a la línea diagonal, mejor es la capacidad predictiva del modelo.
+
+Debido a la naturaleza no lineal de los datos de Airbnb, Random Forest logró capturar relaciones complejas entre variables como ubicación, tipo de propiedad, disponibilidad y cantidad de habitaciones, obteniendo un desempeño robusto en la tarea de regresión.
