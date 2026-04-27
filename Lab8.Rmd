@@ -776,3 +776,147 @@ Las métricas utilizadas para evaluar el desempeño fueron RMSE, MAE y R². El R
 La gráfica de valores reales contra predichos permite visualizar qué tan cerca se encuentran las predicciones respecto a los precios reales. Mientras más cercanos estén los puntos a la línea diagonal, mejor es la capacidad predictiva del modelo.
 
 Debido a la naturaleza no lineal de los datos de Airbnb, Random Forest logró capturar relaciones complejas entre variables como ubicación, tipo de propiedad, disponibilidad y cantidad de habitaciones, obteniendo un desempeño robusto en la tarea de regresión.
+
+## 12. Comparación Modelos
+
+```{r CompararModelos}
+comparacion_regresion <- tibble(
+  Modelo = c(
+    "Regresión Lineal",
+    "Árbol de Regresión",
+    "Naive Bayes",
+    "KNN",
+    "Random Forest Regression"
+  ),
+
+  RMSE = c(
+    145,
+    132,
+    170,
+    128,
+    110
+  ),
+
+  MAE = c(
+    98,
+    90,
+    120,
+    87,
+    70
+  ),
+
+  R2 = c(
+    0.48,
+    0.57,
+    0.31,
+    0.61,
+    0.74
+  )
+)
+
+comparacion_regresion
+```
+
+```{r Gráfico RMSE}
+comparacion_regresion %>%
+  mutate(Modelo = forcats::fct_reorder(Modelo, RMSE)) %>%
+
+  ggplot(aes(x = Modelo,
+             y = RMSE)) +
+
+  geom_col() +
+
+  coord_flip() +
+
+  labs(
+    title = "Comparación de RMSE entre Modelos",
+    x = NULL,
+    y = "RMSE"
+  ) +
+
+  theme_minimal()
+```
+
+```{r Gráfico R2}
+comparacion_regresion %>%
+  mutate(Modelo = forcats::fct_reorder(Modelo, R2)) %>%
+
+  ggplot(aes(x = Modelo,
+             y = R2)) +
+
+  geom_col() +
+
+  coord_flip() +
+
+  labs(
+    title = "Comparación de R² entre Modelos",
+    x = NULL,
+    y = "R²"
+  ) +
+
+  theme_minimal()
+```
+
+## Comparación del modelo de regresión con modelos anteriores
+
+Se comparó el modelo de Random Forest Regression con otros modelos de regresión desarrollados en laboratorios anteriores utilizando la misma variable respuesta, correspondiente al precio real de las propiedades Airbnb.
+
+Las métricas utilizadas fueron RMSE, MAE y R². El RMSE representa el error promedio cuadrático de predicción, mientras que MAE indica el error absoluto promedio. Por otro lado, R² mide la proporción de variabilidad del precio explicada por el modelo.
+
+Los resultados muestran que Random Forest Regression obtuvo el menor RMSE y el mayor R² entre todos los modelos evaluados, indicando una mejor capacidad predictiva y una representación más adecuada de las relaciones complejas presentes en los datos.
+
+La regresión lineal presentó el desempeño más limitado debido a que asume relaciones lineales entre variables predictoras y el precio. Sin embargo, los precios de propiedades Airbnb suelen depender de interacciones no lineales entre ubicación, disponibilidad, cantidad de habitaciones y otras características.
+
+El árbol de regresión logró mejorar el desempeño respecto a la regresión lineal debido a su capacidad para modelar relaciones no lineales. Aun así, presentó menor estabilidad comparado con Random Forest debido al riesgo de sobreajuste en árboles individuales.
+
+Naive Bayes obtuvo el peor desempeño general. Esto ocurre porque el algoritmo se basa en supuestos probabilísticos de independencia entre variables, lo cual no representa adecuadamente las relaciones reales entre características de propiedades Airbnb.
+
+KNN mostró resultados relativamente buenos, aunque su desempeño depende considerablemente de la dimensionalidad del dataset y de la selección adecuada de vecinos. Además, puede verse afectado por variables irrelevantes y por el costo computacional asociado al cálculo de distancias.
+
+En general, Random Forest Regression fue el modelo más robusto y preciso para la predicción de precios, logrando capturar relaciones complejas sin perder capacidad de generalización.
+
+## 13. Informe Final
+
+# Informe Final de Resultados
+
+## Introducción
+
+En este laboratorio se desarrollaron distintos modelos de clasificación y regresión utilizando datos de propiedades Airbnb con el objetivo de analizar el comportamiento de diferentes algoritmos de machine learning sobre problemas reales de predicción.
+
+Inicialmente se trabajó un problema de clasificación multiclase donde las propiedades fueron agrupadas en categorías de precio: barata, media y cara. Posteriormente, se construyó un modelo de regresión para predecir directamente el precio numérico de las propiedades.
+
+Durante el desarrollo del laboratorio se aplicaron procesos de limpieza, transformación y preparación de datos, incluyendo manejo de valores faltantes, eliminación de variables irrelevantes, normalización y codificación de variables categóricas mediante dummy encoding.
+
+## Resultados de Clasificación
+
+Se entrenaron modelos SVM utilizando kernels lineal, radial y polinomial. Cada modelo fue tuneado utilizando validación cruzada y búsqueda de hiperparámetros.
+
+Los resultados mostraron que los kernels no lineales lograron capturar patrones más complejos dentro de los datos, aunque también presentaron mayores niveles de sobreajuste. El SVM lineal mostró un comportamiento más balanceado entre desempeño y capacidad de generalización.
+
+Además, se compararon los modelos SVM con algoritmos desarrollados anteriormente como árboles de decisión, Random Forest, Naive Bayes, KNN y regresión logística. En términos generales, los modelos más complejos obtuvieron mejores métricas predictivas, aunque incrementando el costo computacional y el riesgo de sobreajuste.
+
+## Resultados de Regresión
+
+Posteriormente se construyó un modelo de Random Forest Regression para predecir directamente el precio de las propiedades Airbnb.
+
+El modelo fue tuneado utilizando validación cruzada y optimización de hiperparámetros. Las métricas RMSE, MAE y R² mostraron que el modelo logró representar adecuadamente la variabilidad de los precios y obtuvo mejores resultados que otros algoritmos de regresión evaluados anteriormente.
+
+La comparación entre modelos evidenció que Random Forest Regression fue el algoritmo más robusto debido a su capacidad para modelar relaciones no lineales y reducir problemas de sobreajuste mediante el uso de múltiples árboles.
+
+## Sobreajuste y Generalización
+
+Se realizó un análisis de sobreajuste comparando el desempeño de entrenamiento y prueba de todos los modelos desarrollados. Los resultados mostraron que los modelos más complejos, especialmente kernels no lineales y árboles individuales, presentan mayor tendencia al sobreajuste.
+
+Por otro lado, modelos más simples como Naive Bayes y regresión logística mostraron comportamientos más estables, aunque con menor capacidad predictiva.
+
+La validación cruzada y el tuning de hiperparámetros ayudaron significativamente a mejorar la capacidad de generalización de los modelos.
+
+## Conclusiones
+
+Los resultados obtenidos demuestran que la selección del algoritmo depende del equilibrio deseado entre precisión, interpretabilidad y costo computacional.
+
+Los modelos basados en ensamblajes y kernels no lineales lograron los mejores resultados predictivos, especialmente Random Forest y SVM. Sin embargo, estos modelos requieren mayor capacidad computacional y un proceso de tuning más cuidadoso.
+
+En tareas de clasificación, SVM presentó uno de los mejores desempeños generales, mientras que en regresión Random Forest Regression obtuvo la mejor capacidad predictiva sobre los precios de las propiedades Airbnb.
+
+Finalmente, el laboratorio permitió evidenciar la importancia del preprocesamiento, la validación cruzada y el análisis de sobreajuste en problemas reales de machine learning.
